@@ -26,6 +26,7 @@ from image_creation import (
     _select_representative_cards,
     _generate_images_for_deck,
 )
+from facebook_posting import post_to_facebook, generate_caption
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -78,7 +79,7 @@ async def get_decks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     set_info = data.get("set", {}) or {}
-    decks = data.get("decks", [])[:5] # limit to first deck for testing
+    decks = data.get("decks", [])[:5] 
 
     # Compute set primary color from logo (if available) and set runtime color
     global CURRENT_SET_COLOR
@@ -162,6 +163,20 @@ async def get_decks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_media_group(chat_id=chat_id, media=medias)
     except Exception:
         logger.exception("Failed to send media groups")
+
+    # Generate and send caption (phrase + hashtags) to Telegram and Facebook
+    try:
+        deck_names = [deck.get('name', '') for deck in decks]
+        caption, phrase, hashtags_str = await asyncio.to_thread(generate_caption, deck_names)
+        
+        # Send caption to Telegram
+        await update.message.reply_text(f"{phrase}\n\n{hashtags_str}")
+        
+        # Post to Facebook
+        image_bytes_for_fb = [item[0] for item in media_items]  # Extract bytes from media_items
+        await asyncio.to_thread(post_to_facebook, deck_names, image_bytes_for_fb)
+    except Exception:
+        logger.exception("Failed to send caption or post to Facebook")
 
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()

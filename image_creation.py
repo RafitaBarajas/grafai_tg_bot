@@ -10,6 +10,107 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# Cache for pokemon-tcg-pocket-database cards
+_CARD_DB_CACHE = None
+# Cache for pokemon-tcg-pocket-database sets
+_SET_DB_CACHE = None
+
+
+def _get_latest_set_code() -> Optional[str]:
+    """Return the latest set code from the pocket-database `sets.json`.
+    If the latest set has 'PROMO' in its code, return the previous set's code.
+    """
+    global _SET_DB_CACHE
+    try:
+        if _SET_DB_CACHE is None:
+            logger.info("Loading pokemon-tcg-pocket-database sets.json...")
+            sets_url = "https://raw.githubusercontent.com/flibustier/pokemon-tcg-pocket-database/main/dist/sets.json"
+            r = requests.get(sets_url, timeout=20)
+            if r.status_code != 200:
+                logger.warning(f"Failed to load sets.json: {r.status_code}")
+                _SET_DB_CACHE = []
+                return None
+            _SET_DB_CACHE = r.json()
+            logger.info(f"Loaded {len(_SET_DB_CACHE)} sets from pocket-database")
+
+        if not isinstance(_SET_DB_CACHE, list) or len(_SET_DB_CACHE) == 0:
+            return None
+
+        last = _SET_DB_CACHE[-1]
+        code = (last.get('code') or '').strip()
+        if code and 'PROMO' in code.upper():
+            # Use previous set if available
+            if len(_SET_DB_CACHE) >= 2:
+                prev = _SET_DB_CACHE[-2]
+                return (prev.get('code') or '').strip().upper()
+            return None
+        return code.upper() if code else None
+    except Exception as e:
+        logger.error(f"Error fetching latest set code: {e}")
+        _SET_DB_CACHE = []
+        return None
+
+
+def _fetch_set_logo_image(set_code: str) -> Optional[Image.Image]:
+    """Fetch the set logo image from pokemon-tcg-exchange given a set code.
+    Filename pattern: LOGO_expansion_<SETCODE>_en_US.webp
+    Tries .webp first, then .png as fallback.
+    """
+    if not set_code:
+        return None
+    headers = {"User-Agent": "Mozilla/5.0"}
+    base = "https://raw.githubusercontent.com/flibustier/pokemon-tcg-exchange/main/public/images/sets"
+    fname_webp = f"LOGO_expansion_{set_code.upper()}_en_US.webp"
+    url_webp = f"{base}/{fname_webp}"
+    try:
+        r = requests.get(url_webp, headers=headers, timeout=12)
+        if r.status_code == 200 and r.content:
+            return Image.open(io.BytesIO(r.content)).convert("RGBA")
+    except Exception:
+        pass
+    # fallback to png
+    try:
+        fname_png = f"LOGO_expansion_{set_code.upper()}_en_US.png"
+        url_png = f"{base}/{fname_png}"
+        r2 = requests.get(url_png, headers=headers, timeout=12)
+        if r2.status_code == 200 and r2.content:
+            return Image.open(io.BytesIO(r2.content)).convert("RGBA")
+    except Exception:
+        pass
+    logger.warning(f"Set logo not found in exchange repo for set {set_code}")
+    return None
+
+
+def _get_card_from_pocket_db(set_code: str, card_number: int) -> Optional[dict]:
+    """Fetch card from pokemon-tcg-pocket-database and return the card object."""
+    global _CARD_DB_CACHE
+    try:
+        if _CARD_DB_CACHE is None:
+            logger.info("Loading pokemon-tcg-pocket-database cards.json...")
+            db_url = "https://raw.githubusercontent.com/flibustier/pokemon-tcg-pocket-database/main/dist/cards.json"
+            r = requests.get(db_url, timeout=30)
+            if r.status_code != 200:
+                logger.warning(f"Failed to load pokemon-tcg-pocket-database: {r.status_code}")
+                _CARD_DB_CACHE = {}
+                return None
+            _CARD_DB_CACHE = r.json()
+            logger.info(f"Loaded {len(_CARD_DB_CACHE)} cards from pokemon-tcg-pocket-database")
+        
+        # Normalize set code to uppercase (database uses uppercase, e.g., "B1A", "A1")
+        set_code_upper = set_code.upper()
+        
+        # Search for matching card
+        for card in _CARD_DB_CACHE:
+            if card.get("set") == set_code_upper and card.get("number") == card_number:
+                return card
+        
+        logger.warning(f"Card not found in database: set={set_code_upper}, number={card_number}")
+        return None
+    except Exception as e:
+        logger.error(f"Error loading pokemon-tcg-pocket-database: {e}")
+        _CARD_DB_CACHE = {}
+        return None
+
 
 def _load_font(size: int = 24, family: Optional[str] = None) -> ImageFont.ImageFont:
     fonts_dir = os.path.join(os.path.dirname(__file__), "fonts")
@@ -69,6 +170,79 @@ def _get_text_size(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFo
         return (len(text) * 6, 12)
 
 
+def _apply_branding(img: Image.Image) -> Image.Image:
+    """Paste the small grafai logo in the bottom-right and draw @grafai_ai beneath it."""
+    try:
+        logo_path = os.path.join(os.path.dirname(__file__), "images", "grafai_logo.png")
+        if not os.path.isfile(logo_path):
+            return img
+
+        # ensure image is RGBA for alpha compositing
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+
+        logo = Image.open(logo_path).convert("RGBA")
+        img_w, img_h = img.size
+
+        # scale logo to ~10% of image width, min 24px, max 160px
+        target_logo_w = max(24, min(160, int(img_w * 0.10)))
+        lw, lh = logo.size
+        scale = float(target_logo_w) / float(lw) if lw > 0 else 1.0
+        new_lw = max(1, int(lw * scale))
+        new_lh = max(1, int(lh * scale))
+        logo = logo.resize((new_lw, new_lh), Image.LANCZOS)
+        lw, lh = logo.size
+
+        # create a circular mask and white circular background (with small padding)
+        pad = max(4, int(lw * 0.12))
+        final_w = lw + pad
+        final_h = lh + pad
+
+        # circular background (white)
+        bg_circle = Image.new("RGBA", (final_w, final_h), (0, 0, 0, 0))
+        bg_draw = ImageDraw.Draw(bg_circle)
+        bg_draw.ellipse((0, 0, final_w - 1, final_h - 1), fill=(255, 255, 255, 255))
+
+        # circular logo: apply circular alpha mask to resized logo
+        mask = Image.new("L", (lw, lh), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, lw - 1, lh - 1), fill=255)
+        circ_logo = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
+        circ_logo.paste(logo, (0, 0), mask)
+
+        # composite: paste circ_logo centered over bg_circle
+        offset_x = (final_w - lw) // 2
+        offset_y = (final_h - lh) // 2
+        bg_circle.paste(circ_logo, (offset_x, offset_y), circ_logo)
+
+        final_logo = bg_circle
+
+        margin = max(8, int(img_w * 0.02))
+
+        draw = ImageDraw.Draw(img)
+        # choose font size relative to image width
+        font_size = max(10, int(img_w * 0.012))
+        font = _load_font(font_size)
+        text = "@grafai_ai"
+        text_w, text_h = _get_text_size(draw, text, font)
+
+        total_h = final_h + 4 + text_h
+        logo_x = img_w - final_w - margin
+        logo_y = img_h - margin - total_h
+
+        # Paste circular logo with white background
+        img.paste(final_logo, (logo_x, logo_y), final_logo)
+
+        # Draw text centered under logo with slight stroke for readability
+        text_x = logo_x + max(0, (final_w - text_w) // 2)
+        text_y = logo_y + final_h + 4
+        draw.text((text_x, text_y), text, font=font, fill=(255, 255, 255), stroke_width=1, stroke_fill=(0, 0, 0))
+
+        return img
+    except Exception as e:
+        logger.debug(f"_apply_branding failed: {e}")
+        return img
+
+
 def _normalize_card_code(code: str) -> Optional[str]:
     if not code:
         return None
@@ -98,26 +272,53 @@ def _fetch_card_image(code: str) -> Optional[Image.Image]:
         logger.warning(f"Could not normalize card code: {code}")
         return None
     headers = {"User-Agent": "Mozilla/5.0"}
+    
+    # Try tcgdex API first
     try:
         api_url = f"https://api.tcgdex.net/v2/en/cards/{normalized_code}"
         r = requests.get(api_url, headers=headers, timeout=10)
-        if r.status_code != 200:
-            logger.warning(f"tcgdex API returned {r.status_code} for card code {code} (normalized: {normalized_code})")
-            return None
-        card_data = r.json()
-        image_url = card_data.get("image")
-        if not image_url:
-            logger.warning(f"No image URL found for card code {code}")
-            return None
-        img_response = requests.get(f"{image_url}/high.png", headers=headers, timeout=10)
-        if img_response.status_code == 200 and img_response.content:
-            img = Image.open(io.BytesIO(img_response.content)).convert("RGBA")
-            return img
-        logger.warning(f"Failed to fetch image for {code} from {image_url}")
-        return None
+        if r.status_code == 200:
+            card_data = r.json()
+            image_url = card_data.get("image")
+            if image_url:
+                img_response = requests.get(f"{image_url}/high.png", headers=headers, timeout=10)
+                if img_response.status_code == 200 and img_response.content:
+                    img = Image.open(io.BytesIO(img_response.content)).convert("RGBA")
+                    return img
     except Exception as e:
-        logger.error(f"Error fetching card image for code {code}: {e}")
-        return None
+        logger.debug(f"tcgdex fetch failed for {code}: {e}")
+    
+    # Fallback: try pokemon-tcg-pocket-database + pokemon-tcg-exchange
+    try:
+        # Parse set code and card number from normalized code
+        parts = normalized_code.split("-")
+        if len(parts) >= 2:
+            set_code = "-".join(parts[:-1])
+            try:
+                card_number = int(parts[-1])
+            except ValueError:
+                logger.warning(f"Could not parse card number from {normalized_code}")
+                return None
+            
+            # Fetch card from pokemon-tcg-pocket-database
+            card = _get_card_from_pocket_db(set_code, card_number)
+            if card:
+                image_name = card.get("imageName")
+                if image_name:
+                    # Construct URL from pokemon-tcg-exchange
+                    exchange_url = f"https://raw.githubusercontent.com/flibustier/pokemon-tcg-exchange/main/public/images/cards/{image_name}"
+                    logger.info(f"Fetching {code} from pokemon-tcg-exchange: {exchange_url}")
+                    img_response = requests.get(exchange_url, headers=headers, timeout=10)
+                    if img_response.status_code == 200 and img_response.content:
+                        img = Image.open(io.BytesIO(img_response.content)).convert("RGBA")
+                        return img
+                    else:
+                        logger.warning(f"Failed to fetch image from pokemon-tcg-exchange: {exchange_url} (status: {img_response.status_code})")
+    except Exception as e:
+        logger.debug(f"Fallback fetch failed for {code}: {e}")
+    
+    logger.warning(f"Could not fetch image for card code {code}")
+    return None
 
 
 def _hex_to_rgb(h: str) -> Tuple[int, int, int]:
@@ -226,24 +427,22 @@ def _generate_front_page(set_info: dict) -> Optional[bytes]:
     bg = _background_for_set(set_info.get("id") if isinstance(set_info, dict) else "", (W, H))
     draw = ImageDraw.Draw(bg)
     title_font = _load_font(110, family="Montserrat")
-    date_font = _load_font(44, family="Rajdhani")
+    # Increase date font size for better visibility
+    date_font = _load_font(56, family="Rajdhani")
     title = "Best Decks"
     date_s = datetime.utcnow().strftime("%B %d, %Y")
     logo_img = None
-    logo_url = None
-    if isinstance(set_info, dict):
-        logo_url = set_info.get("logo") or set_info.get("symbol") or set_info.get("image")
-    if logo_url:
+    # Prefer to fetch the logo for the latest set from the pocket-database / exchange repo
+    latest_set_code = _get_latest_set_code()
+    if latest_set_code:
         try:
-            r = requests.get(logo_url + ("/high.png" if not logo_url.endswith((".png", ".jpg", ".jpeg")) else ""), timeout=8, headers={"User-Agent":"Mozilla/5.0"})
-            if r.status_code == 200 and r.content:
-                logo_img = Image.open(io.BytesIO(r.content)).convert("RGBA")
-                max_logo_w = int(W * 0.6)
-                max_logo_h = int(H * 0.45)
+            logo_img = _fetch_set_logo_image(latest_set_code)
+            if logo_img:
+                # make cover logo a bit smaller
+                max_logo_w = int(W * 0.45)
+                max_logo_h = int(H * 0.35)
                 lw, lh = logo_img.size
-                if lw == 0 or lh == 0:
-                    pass
-                else:
+                if lw and lh:
                     scale = min(max_logo_w / lw, max_logo_h / lh)
                     new_w = max(1, int(lw * scale))
                     new_h = max(1, int(lh * scale))
@@ -251,6 +450,28 @@ def _generate_front_page(set_info: dict) -> Optional[bytes]:
                         logo_img = logo_img.resize((new_w, new_h), Image.LANCZOS)
         except Exception:
             logo_img = None
+    else:
+        # Fallback: try any logo/url present in set_info
+        logo_url = None
+        if isinstance(set_info, dict):
+            logo_url = set_info.get("logo") or set_info.get("symbol") or set_info.get("image")
+        if logo_url:
+            try:
+                r = requests.get(logo_url + ("/high.png" if not logo_url.endswith((".png", ".jpg", ".jpeg")) else ""), timeout=8, headers={"User-Agent":"Mozilla/5.0"})
+                if r.status_code == 200 and r.content:
+                    logo_img = Image.open(io.BytesIO(r.content)).convert("RGBA")
+                    # smaller fallback sizing for cover
+                    max_logo_w = int(W * 0.45)
+                    max_logo_h = int(H * 0.35)
+                    lw, lh = logo_img.size
+                    if lw and lh:
+                        scale = min(max_logo_w / lw, max_logo_h / lh)
+                        new_w = max(1, int(lw * scale))
+                        new_h = max(1, int(lh * scale))
+                        if (new_w, new_h) != (lw, lh):
+                            logo_img = logo_img.resize((new_w, new_h), Image.LANCZOS)
+            except Exception:
+                logo_img = None
     title_cap = title.upper()
     date_cap = date_s.upper()
     tw, th = _get_text_size(draw, title_cap, title_font)
@@ -271,6 +492,11 @@ def _generate_front_page(set_info: dict) -> Optional[bytes]:
         logo_y = start_y + th + spacing + dth + logo_spacing
         bg.paste(logo_img, (logo_x, logo_y), logo_img)
     buf = io.BytesIO()
+    # apply branding before saving
+    try:
+        bg = _apply_branding(bg)
+    except Exception:
+        pass
     bg.convert("RGB").save(buf, format="JPEG", quality=90)
     buf.seek(0)
     return buf.getvalue()
@@ -334,6 +560,10 @@ def _generate_images_for_deck(deck: dict, position: int, set_code: str) -> Tuple
             pd.text((20, 20), c.get("name", ""), font=small_font, fill=(255, 255, 255))
             bg.paste(ph, (x_offset + i * 360, y_offset))
     buf1 = io.BytesIO()
+    try:
+        bg = _apply_branding(bg)
+    except Exception:
+        pass
     bg.convert("RGB").save(buf1, format="JPEG", quality=90)
     buf1.seek(0)
     W2 = 1200
@@ -352,6 +582,10 @@ def _generate_images_for_deck(deck: dict, position: int, set_code: str) -> Tuple
         title_w, title_h = _get_text_size(d2, title2_cap, title2_font)
         title_x = (W2 - title_w) // 2
         d2.text((title_x, 30), title2_cap, font=title2_font, fill=title2_color, stroke_width=6, stroke_fill=(255,255,255))
+        try:
+            deck_img = _apply_branding(deck_img)
+        except Exception:
+            pass
         deck_img.convert("RGB").save(buf2, format="JPEG", quality=90)
         buf2.seek(0)
         return buf1.getvalue(), buf2.getvalue()
@@ -397,6 +631,10 @@ def _generate_images_for_deck(deck: dict, position: int, set_code: str) -> Tuple
         ty = oy + (overlay_h - text_h) // 2 - 1
         d2.text((tx, ty), f"x{qty}", font=qty_font, fill=(255, 255, 255))
     buf2 = io.BytesIO()
+    try:
+        deck_img = _apply_branding(deck_img)
+    except Exception:
+        pass
     deck_img.convert("RGB").save(buf2, format="JPEG", quality=90)
     buf2.seek(0)
     return buf1.getvalue(), buf2.getvalue()

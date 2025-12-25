@@ -25,6 +25,7 @@ from image_creation import (
     _generate_front_page,
     _select_representative_cards,
     _generate_images_for_deck,
+    _generate_back_cover,
 )
 from facebook_posting import post_to_facebook, generate_caption
 
@@ -185,6 +186,14 @@ async def do_get_decks(chat_id: int, context: ContextTypes.DEFAULT_TYPE, post_to
                 media_items.append((buf_err.getvalue(), f"Error: {deck.get('name','') }"))
             except Exception:
                 continue
+
+    # Add back cover image as the last image
+    try:
+        back = await asyncio.to_thread(_generate_back_cover, set_info)
+        if back:
+            media_items.append((back, None))
+    except Exception:
+        logger.exception("Failed to generate back cover")
 
     # Now send media items in batches of up to 10 (Telegram media group limit)
     if not media_items:

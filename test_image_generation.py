@@ -13,7 +13,7 @@ import logging
 from pathlib import Path
 
 from get_decks import get_top_10_decks
-from image_creation import _generate_front_page, _generate_images_for_deck
+from image_creation import _generate_front_page, _generate_images_for_deck, _generate_back_cover
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -96,6 +96,18 @@ def test_image_generation():
     logger.info(f"\nAll images saved to: {test_dir.resolve()}")
     logger.info("You can now review the images and check for missing card images.")
     
+    # Generate back cover
+    logger.info("Generating back cover image...")
+    try:
+        back_bytes = _generate_back_cover(set_info)
+        if back_bytes:
+            back_path = test_dir / "99_back_cover.jpg"
+            with open(back_path, "wb") as f:
+                f.write(back_bytes)
+            logger.info(f"✅ Saved back cover to {back_path}")
+    except Exception as e:
+        logger.error(f"Error generating back cover: {e}")
+
     return len(failed_decks) == 0
 
 

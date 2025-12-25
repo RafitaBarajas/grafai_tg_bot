@@ -502,6 +502,59 @@ def _generate_front_page(set_info: dict) -> Optional[bytes]:
     return buf.getvalue()
 
 
+def _generate_back_cover(set_info: dict = None) -> Optional[bytes]:
+    """Generate a simple back cover image that says 'Follow for Meta Updates'."""
+    W, H = 1400, 900
+    set_code = set_info.get("id") if isinstance(set_info, dict) else ""
+    bg = _background_for_set(set_code, (W, H))
+    draw = ImageDraw.Draw(bg)
+
+    # Render the main phrase in two centered lines, large and auto-fitting
+    lines = ["Follow for", "Meta Updates"]
+    # attempt a large starting size then decrease until both lines fit within margins
+    max_font_size = int(W * 0.14)
+    min_font_size = 28
+    margin_x = int(W * 0.08)
+    chosen_font = _load_font(72, family="Montserrat")
+    for fs in range(max_font_size, min_font_size, -2):
+        f = _load_font(fs, family="Montserrat")
+        fits = True
+        widths = []
+        heights = []
+        for ln in lines:
+            w, h = _get_text_size(draw, ln.upper(), f)
+            widths.append(w)
+            heights.append(h)
+            if w > (W - margin_x * 2):
+                fits = False
+                break
+        if fits:
+            chosen_font = f
+            break
+
+    # compute total height and draw each line centered
+    upper_lines = [ln.upper() for ln in lines]
+    line_sizes = [_get_text_size(draw, ln, chosen_font) for ln in upper_lines]
+    total_h = sum(h for w, h in line_sizes) + (len(lines) - 1) * 12
+    start_y = (H - total_h) // 2
+    for idx, ln in enumerate(upper_lines):
+        w, h = line_sizes[idx]
+        x = (W - w) // 2
+        y = start_y + sum(line_sizes[i][1] for i in range(idx)) + idx * 12
+        draw.text((x, y), ln, font=chosen_font, fill=_hex_to_rgb('#ffffff'), stroke_width=6, stroke_fill=(0, 0, 0))
+
+    # Apply branding
+    try:
+        bg = _apply_branding(bg)
+    except Exception:
+        pass
+
+    buf = io.BytesIO()
+    bg.convert("RGB").save(buf, format="JPEG", quality=90)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def _generate_images_for_deck(deck: dict, position: int, set_code: str) -> Tuple[bytes, bytes]:
     W1, H1 = 1200, 700
     bg = _background_for_set(set_code, (W1, H1))

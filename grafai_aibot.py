@@ -5,6 +5,8 @@ import asyncio
 from typing import Tuple, Optional
 import re
 
+from dotenv import load_dotenv
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
@@ -28,6 +30,8 @@ from image_creation import (
     _generate_back_cover,
 )
 from facebook_posting import post_to_facebook, generate_caption
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

@@ -104,24 +104,45 @@ async def schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def get_decks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler: fetch decks locally, generate images for first 5 decks and send them to chat.
-    Optional argument: /decks false to skip Facebook posting.
+    """Handler: fetch decks, generate listing images and per-deck grids.
+    Usage examples:
+      /decks               -> default (5 decks, post to Facebook)
+      /decks false         -> 5 decks, do not post to Facebook
+      /decks 8             -> 8 decks, post to Facebook
+      /decks false 8       -> 8 decks, do not post to Facebook
     """
     await update.message.reply_text("Getting Decks Data...")
-    # Check for optional flag to disable Facebook posting
     post_to_fb = True
+    num_decks = 5
     args = context.args or []
-    if args and args[0].lower() == 'false':
-        post_to_fb = False
+
+    # Parse args: allow either (true|false) as first arg and a number as second,
+    # or a number as the first arg.
+    if args:
+        first = args[0].lower()
+        if first in ('false', 'true'):
+            post_to_fb = (first == 'true')
+            if len(args) > 1:
+                try:
+                    num_decks = max(1, int(args[1]))
+                except Exception:
+                    pass
+        else:
+            try:
+                num_decks = max(1, int(args[0]))
+            except Exception:
+                # leave defaults if parsing fails
+                pass
+
     # delegate the heavy lifting to the reusable function using the chat id
     try:
-        await do_get_decks(update.effective_chat.id, context, post_to_facebook=post_to_fb)
+        await do_get_decks(update.effective_chat.id, context, post_to_facebook=post_to_fb, num_decks=num_decks)
     except Exception:
         logger.exception("Scheduled get_decks failed when invoked interactively")
         await update.message.reply_text("An error occurred while generating decks.")
 
 
-async def do_get_decks(chat_id: int, context: ContextTypes.DEFAULT_TYPE, post_to_facebook: bool = True):
+async def do_get_decks(chat_id: int, context: ContextTypes.DEFAULT_TYPE, post_to_facebook: bool = True, num_decks: int = 5):
     """Perform the get_decks workflow for a specific chat id. This is reused by the
     interactive handler and by scheduled jobs.
     Args:
@@ -137,7 +158,8 @@ async def do_get_decks(chat_id: int, context: ContextTypes.DEFAULT_TYPE, post_to
         return
 
     set_info = data.get("set", {}) or {}
-    decks = data.get("decks", [])[:5]
+    # Respect the requested number of decks (default 5)
+    decks = data.get("decks", [])[:max(0, int(num_decks))]
 
     # Compute set primary color from logo (if available) and set runtime color
     global CURRENT_SET_COLOR
@@ -157,6 +179,7 @@ async def do_get_decks(chat_id: int, context: ContextTypes.DEFAULT_TYPE, post_to
 
     listing_pages = []
     try:
+        # Listing pages show up to 5 decks per page
         listing_pages = await asyncio.to_thread(_generate_listing_pages, decks, set_info, 5)
     except Exception:
         logger.exception("Failed to generate listing pages")

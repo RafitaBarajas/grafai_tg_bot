@@ -132,8 +132,11 @@ def _load_font(size: int = 24, family: Optional[str] = None) -> ImageFont.ImageF
             path = os.path.join(fonts_dir, fname)
             if os.path.isfile(path):
                 try:
-                    return ImageFont.truetype(path, size=size)
-                except Exception:
+                    font = ImageFont.truetype(path, size=size)
+                    logger.debug(f"Loaded font from {path} with size {size}")
+                    return font
+                except Exception as e:
+                    logger.debug(f"Failed to load {path}: {e}")
                     continue
 
     if family:
@@ -141,17 +144,33 @@ def _load_font(size: int = 24, family: Optional[str] = None) -> ImageFont.ImageF
         path = os.path.join(fonts_dir, generic)
         if os.path.isfile(path):
             try:
-                return ImageFont.truetype(path, size=size)
-            except Exception:
+                font = ImageFont.truetype(path, size=size)
+                logger.debug(f"Loaded font from {path} with size {size}")
+                return font
+            except Exception as e:
+                logger.debug(f"Failed to load {path}: {e}")
                 pass
 
-    try:
-        return ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", size=size)
-    except Exception:
-        try:
-            return ImageFont.truetype("arial.ttf", size=size)
-        except Exception:
-            return ImageFont.load_default()
+    # Try system fonts on Linux/Raspberry Pi
+    system_font_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+        "arial.ttf",
+    ]
+    
+    for font_path in system_font_paths:
+        if os.path.isfile(font_path):
+            try:
+                font = ImageFont.truetype(font_path, size=size)
+                logger.debug(f"Loaded fallback font from {font_path} with size {size}")
+                return font
+            except Exception as e:
+                logger.debug(f"Failed to load {font_path}: {e}")
+                continue
+    
+    logger.warning(f"No TrueType font found, falling back to default bitmap font")
+    return ImageFont.load_default()
 
 
 def _get_text_size(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> Tuple[int, int]:

@@ -13,7 +13,7 @@ import logging
 from pathlib import Path
 
 from get_decks import get_top_10_decks
-from image_creation import _generate_front_page, _generate_images_for_deck, _generate_back_cover
+from image_creation import _generate_front_page, _generate_deck_grid_image, _generate_back_cover, _generate_listing_pages
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -41,19 +41,23 @@ def test_image_generation():
         logger.error(f"Error fetching decks: {e}")
         return False
     
-    # Generate front page image
-    logger.info("Generating front page image...")
+    # Front page generation removed (no front page will be created)
+    
+    # Generate listing pages
+    logger.info("Generating listing pages...")
     try:
-        front_page_bytes = _generate_front_page(set_info)
-        if front_page_bytes:
-            front_path = test_dir / "00_front_page.jpg"
-            with open(front_path, "wb") as f:
-                f.write(front_page_bytes)
-            logger.info(f"✅ Saved front page to {front_path}")
-        else:
-            logger.warning("Front page generation returned None")
+        listing_pages = _generate_listing_pages(decks, set_info, per_page=5)
+        for idx, page_bytes in enumerate(listing_pages, start=1):
+            if page_bytes:
+                listing_path = test_dir / f"01_listing_page_{idx}.jpg"
+                with open(listing_path, "wb") as f:
+                    f.write(page_bytes)
+                logger.info(f"✅ Saved listing page {idx} to {listing_path}")
+            else:
+                logger.warning(f"Listing page {idx} generation returned None")
     except Exception as e:
-        logger.error(f"Error generating front page: {e}")
+        logger.error(f"Error generating listing pages: {e}")
+    
     
     # Generate deck images
     logger.info("Generating deck images...")
@@ -61,19 +65,10 @@ def test_image_generation():
     for idx, deck in enumerate(decks, start=1):
         try:
             logger.info(f"Processing deck {idx}/{len(decks)}: {deck.get('name')}")
-            title_bytes, grid_bytes = _generate_images_for_deck(
-                deck,
-                position=idx,
-                set_code=set_info.get("id") if isinstance(set_info, dict) else ""
-            )
-            
-            # Save title/stats image
-            title_path = test_dir / f"{idx:02d}_deck_{idx}_title.jpg"
-            with open(title_path, "wb") as f:
-                f.write(title_bytes)
-            logger.info(f"  ✅ Saved title image to {title_path}")
-            
-            # Save grid/cards image
+            # Generate only the grid image (title+stats drawn inside)
+            cards = deck.get('cards', []) or []
+            set_code_val = set_info.get("id") if isinstance(set_info, dict) else ""
+            grid_bytes = _generate_deck_grid_image(cards, idx, deck.get('name',''), set_code_val, deck.get('win_pct'), deck.get('share'))
             grid_path = test_dir / f"{idx:02d}_deck_{idx}_grid.jpg"
             with open(grid_path, "wb") as f:
                 f.write(grid_bytes)

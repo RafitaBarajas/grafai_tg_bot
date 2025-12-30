@@ -502,6 +502,149 @@ def _generate_front_page(set_info: dict) -> Optional[bytes]:
     return buf.getvalue()
 
 
+def _generate_listing_pages(decks: list, set_info: dict = None, per_page: int = 5) -> list:
+    """Generate one or more listing images containing up to `per_page` decks each.
+    Each page includes title, date, and for each deck: rank (medal for top3), name, stats,
+    and up to 2 representative card images.
+    Returns a list of JPEG bytes for each page.
+    """
+    pages = []
+    if not decks:
+        return pages
+
+    W, H = 1400, 900
+    title_font = _load_font(64, family="Montserrat")
+    date_font = _load_font(28, family="Rajdhani")
+    name_font = _load_font(32, family="Montserrat")
+    stats_font = _load_font(20, family="Rajdhani")
+
+    total = len(decks)
+    for start in range(0, total, per_page):
+        batch = decks[start:start+per_page]
+        bg = _background_for_set(set_info.get("id") if isinstance(set_info, dict) else "", (W, H))
+        draw = ImageDraw.Draw(bg)
+
+        # Header (centered)
+        title = "Best Decks"
+        date_s = datetime.utcnow().strftime("%B %d, %Y").upper()
+        title_cap = title.upper()
+        # compute centered title
+        tw, th = _get_text_size(draw, title_cap, title_font)
+        draw.text(((W - tw) // 2, 40), title_cap, font=title_font, fill=_hex_to_rgb('#eb1c24'), stroke_width=6, stroke_fill=(255,255,255))
+        # date slightly bigger and with margin
+        date_font_bigger = _load_font(36, family="Rajdhani")
+        dtw, dth = _get_text_size(draw, date_s, date_font_bigger)
+        draw.text(((W - dtw) // 2, 40 + th + 12), date_s, font=date_font_bigger, fill=_hex_to_rgb('#3367b0'), stroke_width=3, stroke_fill=(255,255,255))
+
+        header_h = 40 + th + 12 + dth + 20
+
+        # Grid layout: 3 on top row, 2 on bottom row, centered horizontally
+        card_w, card_h = 160, 240
+        card_gap = 10
+        item_w = card_w * 2 + card_gap
+        item_h = card_h + 72  # space for rank icon/number above
+        top_cols = 3
+        bottom_cols = 2
+        row_gap = 24
+
+        top_total_w = top_cols * item_w + (top_cols - 1) * 40
+        bottom_total_w = bottom_cols * item_w + (bottom_cols - 1) * 40
+
+        top_start_x = (W - top_total_w) // 2
+        bottom_start_x = (W - bottom_total_w) // 2
+
+        # move items slightly down to add more space beneath header
+        vertical_offset = 30
+        top_y = header_h + vertical_offset
+        bottom_y = header_h + vertical_offset + item_h + row_gap
+
+        for idx, deck in enumerate(batch):
+            pos = start + idx + 1
+            # determine row/col
+            if idx < 3:
+                row_x = top_start_x
+                col = idx
+                y0 = top_y
+            else:
+                row_x = bottom_start_x
+                col = idx - 3
+                y0 = bottom_y
+
+            x0 = row_x + col * (item_w + 40)
+            # draw rank (medal or number) centered at top of item
+            try:
+                if pos <= 3:
+                    medal_path = os.path.join(os.path.dirname(__file__), "images", f"medal_{pos}.png")
+                    if os.path.exists(medal_path):
+                        medal_img = Image.open(medal_path).convert("RGBA")
+                        medal_img.thumbnail((64, 64))
+                        mx = x0 + (item_w - medal_img.size[0]) // 2
+                        my = y0
+                        bg.paste(medal_img, (mx, my), medal_img)
+                    else:
+                        # show numeric rank with '#' prefix when icon missing
+                        rtext = f"#{pos}"
+                        rfont = _load_font(36, family="Rajdhani")
+                        rtw, rth = _get_text_size(draw, rtext, rfont)
+                        rx = x0 + (item_w - rtw) // 2
+                        ry = y0 + 8
+                        draw.text((rx, ry), rtext, font=rfont, fill=_hex_to_rgb('#3367b0'), stroke_width=3, stroke_fill=(255,255,255))
+                else:
+                    # positions without medal: prefix with '#'
+                    rtext = f"#{pos}"
+                    rfont = _load_font(36, family="Rajdhani")
+                    rtw, rth = _get_text_size(draw, rtext, rfont)
+                    rx = x0 + (item_w - rtw) // 2
+                    ry = y0 + 8
+                    draw.text((rx, ry), rtext, font=rfont, fill=_hex_to_rgb('#3367b0'), stroke_width=3, stroke_fill=(255,255,255))
+            except Exception:
+                rfont = _load_font(36, family="Rajdhani")
+                rtw, rth = _get_text_size(draw, str(pos), rfont)
+                rx = x0 + (item_w - rtw) // 2
+                ry = y0 + 8
+                draw.text((rx, ry), str(pos), font=rfont, fill=_hex_to_rgb('#3367b0'), stroke_width=3, stroke_fill=(255,255,255))
+
+            # draw two representative cards centered in item below the rank
+            reps = _select_representative_cards(deck.get('name',''), deck.get('cards',[]) or [], limit=2)
+            cards_x = x0
+            cards_y = y0 + 56
+            for ci in range(2):
+                cx = cards_x + ci * (card_w + card_gap)
+                if ci < len(reps):
+                    code = reps[ci].get('code','')
+                    try:
+                        img = _fetch_card_image(code)
+                    except Exception:
+                        img = None
+                    if img:
+                        thumb = img.copy()
+                        thumb.thumbnail((card_w, card_h))
+                        tw, th = thumb.size
+                        x_center = cx + (card_w - tw) // 2
+                        y_center = cards_y + (card_h - th) // 2
+                        bg.paste(thumb, (x_center, y_center), thumb)
+                    else:
+                        ph = Image.new('RGBA', (card_w, card_h), (40,40,40))
+                        pd = ImageDraw.Draw(ph)
+                        pd.text((8, 8), reps[ci].get('name',''), font=_load_font(16), fill=(255,255,255))
+                        bg.paste(ph, (cx, cards_y))
+                else:
+                    ph = Image.new('RGBA', (card_w, card_h), (40,40,40))
+                    bg.paste(ph, (cx, cards_y))
+
+        try:
+            bg = _apply_branding(bg)
+        except Exception:
+            pass
+
+        buf = io.BytesIO()
+        bg.convert('RGB').save(buf, format='JPEG', quality=90)
+        buf.seek(0)
+        pages.append(buf.getvalue())
+
+    return pages
+
+
 def _generate_back_cover(set_info: dict = None) -> Optional[bytes]:
     """Generate a simple back cover image that says 'Follow for Meta Updates'."""
     W, H = 1400, 900
@@ -619,18 +762,28 @@ def _generate_images_for_deck(deck: dict, position: int, set_code: str) -> Tuple
         pass
     bg.convert("RGB").save(buf1, format="JPEG", quality=90)
     buf1.seek(0)
-    W2 = 1200
-    cols = 4
-    card_spacing = 5
+    # Create the grid (secondary) image via helper so callers can request only grid image
+    buf2_bytes = _generate_deck_grid_image(cards, position, name_cap, set_code)
+    return buf1.getvalue(), buf2_bytes
+
+
+def _generate_deck_grid_image(cards: list, position: int, name_cap: str, set_code: str, win_pct=None, share_pct=None) -> bytes:
+    """Generate only the deck grid image (title + stats + grid of cards).
+    Designed to use more width and 5 columns per row.
+    """
+    W2 = 1400
+    cols = 5
+    card_spacing = 6
     thumb_target = (160, 160)
     total_grid_width = cols * thumb_target[0] + (cols - 1) * card_spacing
     count = len(cards)
+
     if count == 0:
         buf2 = io.BytesIO()
         deck_img = _background_for_set(set_code, (W2, 700))
         d2 = ImageDraw.Draw(deck_img)
         title2_cap = f"{position}. {name_cap}".upper()
-        title2_font = _load_font(56, family="Montserrat")
+        title2_font = _load_font(48, family="Montserrat")
         title2_color = _hex_to_rgb('#eb1c24')
         title_w, title_h = _get_text_size(d2, title2_cap, title2_font)
         title_x = (W2 - title_w) // 2
@@ -641,23 +794,45 @@ def _generate_images_for_deck(deck: dict, position: int, set_code: str) -> Tuple
             pass
         deck_img.convert("RGB").save(buf2, format="JPEG", quality=90)
         buf2.seek(0)
-        return buf1.getvalue(), buf2.getvalue()
+        return buf2.getvalue()
+
     rows = (count + cols - 1) // cols
     card_row_height = thumb_target[1] + card_spacing
-    H2 = max(400, 120 + rows * card_row_height + 20)
+    H2 = max(420, 140 + rows * card_row_height + 40)
     deck_img = _background_for_set(set_code, (W2, H2))
     d2 = ImageDraw.Draw(deck_img)
+
+    # Title
     title2_cap = f"{position}. {name_cap}".upper()
-    title2_font = _load_font(56, family="Montserrat")
+    title2_font = _load_font(48, family="Montserrat")
     title2_color = _hex_to_rgb('#eb1c24')
     title_w, title_h = _get_text_size(d2, title2_cap, title2_font)
     title_x = (W2 - title_w) // 2
-    d2.text((title_x, 30), title2_cap, font=title2_font, fill=title2_color, stroke_width=6, stroke_fill=(255,255,255))
-    y0 = 120
+    d2.text((title_x, 16), title2_cap, font=title2_font, fill=title2_color, stroke_width=6, stroke_fill=(255,255,255))
+
+    # Stats line centered below title
+    # Expect deck dict info to be passed separately; name_cap includes position and name
+    # We'll attempt to read win/share from a card in context is not available here, so caller should pass stats via cards attr or change signature
+    # As a compromise, if the first card dict has 'deck_stats' key we use it; otherwise caller should use _generate_images_for_deck which still does older behaviour.
+    # For compatibility, we try to read stats from a sentinel in cards list (not present normally). If not found, skip stats.
+    stats_text = None
+    # add stats line centered below title if provided
+    extra_top_padding = 24
+    title_stats_gap = 24
+    if win_pct is not None or share_pct is not None:
+        stats_text = f"Win: {win_pct or 0}% • Share: {share_pct or 0}%".upper()
+        stats_font = _load_font(28, family='Rajdhani')
+        stw, sth = _get_text_size(d2, stats_text, stats_font)
+        d2.text(((W2 - stw) // 2, 16 + title_h + title_stats_gap), stats_text, font=stats_font, fill=_hex_to_rgb('#3367b0'), stroke_width=3, stroke_fill=(255,255,255))
+        y0 = 16 + title_h + title_stats_gap + sth + 12 + extra_top_padding
+    else:
+        y0 = 16 + title_h + title_stats_gap + 20 + extra_top_padding
+
+    # Draw grid of cards centered
+    x_base = (W2 - total_grid_width) // 2
     for idx, c in enumerate(cards):
         r = idx // cols
         col = idx % cols
-        x_base = (W2 - total_grid_width) // 2
         x = x_base + col * (thumb_target[0] + card_spacing)
         y = y0 + r * card_row_height
         code = c.get("code", "")
@@ -674,15 +849,14 @@ def _generate_images_for_deck(deck: dict, position: int, set_code: str) -> Tuple
             x_centered = x + (thumb_target[0] - tw) // 2
             deck_img.paste(ph, (x_centered, y))
         qty = str(c.get("qty", 0))
-        overlay_w, overlay_h = 54, 28
-        ox = x_centered + tw - overlay_w - 6
-        oy = y + th - overlay_h - 6
-        d2.rectangle([ox, oy, ox + overlay_w, oy + overlay_h], fill=(0, 0, 0, 180))
-        qty_font = _load_font(20)
-        text_w, text_h = _get_text_size(d2, f"x{qty}", qty_font)
-        tx = ox + (overlay_w - text_w) // 2
-        ty = oy + (overlay_h - text_h) // 2 - 1
-        d2.text((tx, ty), f"x{qty}", font=qty_font, fill=(255, 255, 255))
+        # render qty as larger text with semi-thick black outline (no black rectangle)
+        qty_font = _load_font(24)
+        qtext = f"x{qty}"
+        text_w, text_h = _get_text_size(d2, qtext, qty_font)
+        tx = x_centered + tw - text_w - 8
+        ty = y + th - text_h - 8
+        d2.text((tx, ty), qtext, font=qty_font, fill=(255,255,255), stroke_width=3, stroke_fill=(0,0,0))
+
     buf2 = io.BytesIO()
     try:
         deck_img = _apply_branding(deck_img)
@@ -690,4 +864,4 @@ def _generate_images_for_deck(deck: dict, position: int, set_code: str) -> Tuple
         pass
     deck_img.convert("RGB").save(buf2, format="JPEG", quality=90)
     buf2.seek(0)
-    return buf1.getvalue(), buf2.getvalue()
+    return buf2.getvalue()

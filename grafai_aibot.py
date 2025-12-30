@@ -24,10 +24,11 @@ from image_creation import (
     _hex_to_rgb,
     _create_diagonal_gradient,
     _compute_primary_color_from_image_url,
-    _generate_front_page,
     _select_representative_cards,
     _generate_images_for_deck,
+    _generate_deck_grid_image,
     _generate_back_cover,
+    _generate_listing_pages,
 )
 from facebook_posting import post_to_facebook, generate_caption
 
@@ -152,28 +153,33 @@ async def do_get_decks(chat_id: int, context: ContextTypes.DEFAULT_TYPE, post_to
         except Exception:
             CURRENT_SET_COLOR = None
 
-    # Generate front page bytes (but don't send yet) so we can batch all images
-    front = None
+    # Front page generation removed per configuration — listings and per-deck grids only
+
+    listing_pages = []
     try:
-        front = await asyncio.to_thread(_generate_front_page, set_info)
+        listing_pages = await asyncio.to_thread(_generate_listing_pages, decks, set_info, 5)
     except Exception:
-        logger.exception("Failed to generate front page")
+        logger.exception("Failed to generate listing pages")
 
     if not decks:
         await context.bot.send_message(chat_id=chat_id, text="No decks found.")
         return
 
     media_items = []  # list of tuples (bytes, optional caption)
-    if front:
-        media_items.append((front, f"Top decks — set: {set_info.get('name') if isinstance(set_info, dict) else set_info}"))
+    # front page intentionally omitted
+    # append listing pages (each shows up to 5 decks with rank + 2 representative cards)
+    for idx_lp, lp in enumerate(listing_pages, start=1):
+        media_items.append((lp, f"Top decks — set: {set_info.get('name') if isinstance(set_info, dict) else set_info} (page {idx_lp})"))
 
     for idx, deck in enumerate(decks, start=1):
         try:
             set_code_value = set_info.get('id') if isinstance(set_info, dict) else set_info
-            img1_bytes, img2_bytes = await asyncio.to_thread(_generate_images_for_deck, deck, idx, set_code_value)
-            caption = f"#{idx} {deck.get('name','')} — Win: {deck.get('win_pct',0)}% • Share: {deck.get('share',0)}%"
-            media_items.append((img1_bytes, caption))
-            media_items.append((img2_bytes, None))
+            # generate only the grid image (title + stats + grid)
+            cards = deck.get('cards', []) or []
+            name_cap = deck.get('name', '')
+            grid_bytes = await asyncio.to_thread(_generate_deck_grid_image, cards, idx, name_cap, set_code_value, deck.get('win_pct'), deck.get('share'))
+            # append only the grid image (title/stats are drawn inside the image)
+            media_items.append((grid_bytes, None))
         except Exception as e:
             logger.exception("Error generating images for deck %s", deck.get('name'))
             # append a placeholder image with error text

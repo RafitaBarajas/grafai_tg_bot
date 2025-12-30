@@ -524,19 +524,75 @@ def _generate_listing_pages(decks: list, set_info: dict = None, per_page: int = 
         bg = _background_for_set(set_info.get("id") if isinstance(set_info, dict) else "", (W, H))
         draw = ImageDraw.Draw(bg)
 
-        # Header (centered)
+        # Header (centered) with optional set logo on the left of the title/date stack
         title = "Best Decks"
         date_s = datetime.utcnow().strftime("%B %d, %Y").upper()
         title_cap = title.upper()
-        # compute centered title
+
+        # compute title/date sizes
         tw, th = _get_text_size(draw, title_cap, title_font)
-        draw.text(((W - tw) // 2, 40), title_cap, font=title_font, fill=_hex_to_rgb('#eb1c24'), stroke_width=6, stroke_fill=(255,255,255))
-        # date slightly bigger and with margin
         date_font_bigger = _load_font(36, family="Rajdhani")
         dtw, dth = _get_text_size(draw, date_s, date_font_bigger)
-        draw.text(((W - dtw) // 2, 40 + th + 12), date_s, font=date_font_bigger, fill=_hex_to_rgb('#3367b0'), stroke_width=3, stroke_fill=(255,255,255))
 
-        header_h = 40 + th + 12 + dth + 20
+        # Try to load a set logo (prefer set_info id, else latest set)
+        logo_img = None
+        try:
+            set_code = set_info.get("id") if isinstance(set_info, dict) else None
+            if set_code:
+                logo_img = _fetch_set_logo_image(set_code)
+            if not logo_img:
+                latest = _get_latest_set_code()
+                if latest:
+                    logo_img = _fetch_set_logo_image(latest)
+            # fallback to explicit url fields in set_info
+            if not logo_img and isinstance(set_info, dict):
+                logo_url = set_info.get("logo") or set_info.get("symbol") or set_info.get("image")
+                if logo_url:
+                    try:
+                        r = requests.get(logo_url + ("/high.png" if not logo_url.endswith((".png", ".jpg", ".jpeg")) else ""), timeout=8, headers={"User-Agent":"Mozilla/5.0"})
+                        if r.status_code == 200 and r.content:
+                            logo_img = Image.open(io.BytesIO(r.content)).convert("RGBA")
+                    except Exception:
+                        logo_img = None
+        except Exception:
+            logo_img = None
+
+        logo_w = logo_h = 0
+        if logo_img:
+            # make logo a little bigger and constrain it to a larger portion of header
+            max_logo_h = max(1, int((th + 12 + dth) * 1.9))
+            max_logo_w = int(W * 0.44)
+            lw, lh = logo_img.size
+            if lw and lh:
+                scale = min(max_logo_w / lw, max_logo_h / lh)
+                new_w = max(1, int(lw * scale))
+                new_h = max(1, int(lh * scale))
+                if (new_w, new_h) != (lw, lh):
+                    logo_img = logo_img.resize((new_w, new_h), Image.LANCZOS)
+            logo_w, logo_h = logo_img.size
+
+        # increase separation between title/date and logo and place logo to the right
+        padding_between = 120
+        stack_w = max(tw, dtw)
+        content_w = (stack_w + padding_between + logo_w) if logo_img else stack_w
+        start_x = (W - content_w) // 2
+
+        # draw title/date on the left of the header block
+        text_x = start_x
+        draw.text((text_x + (stack_w - tw) // 2, 40), title_cap, font=title_font, fill=_hex_to_rgb('#eb1c24'), stroke_width=6, stroke_fill=(255,255,255))
+        draw.text((text_x + (stack_w - dtw) // 2, 40 + th + 12), date_s, font=date_font_bigger, fill=_hex_to_rgb('#3367b0'), stroke_width=3, stroke_fill=(255,255,255))
+
+        # paste logo to the right of title/date if present and vertically center it with the text stack
+        if logo_img:
+            logo_x = text_x + stack_w + padding_between
+            stack_top = 40
+            stack_height = th + 12 + dth
+            text_center_y = stack_top + (stack_height // 2)
+            logo_y = (text_center_y // 2) - (stack_height // 2) + 12
+            bg.paste(logo_img, (logo_x, logo_y), logo_img)
+
+        # header height should accommodate taller logo if present
+        header_h = max(stack_top + stack_height + 20, stack_top + logo_h + 20)
 
         # Grid layout: 3 on top row, 2 on bottom row, centered horizontally
         card_w, card_h = 160, 240
@@ -545,7 +601,7 @@ def _generate_listing_pages(decks: list, set_info: dict = None, per_page: int = 
         item_h = card_h + 72  # space for rank icon/number above
         top_cols = 3
         bottom_cols = 2
-        row_gap = 24
+        row_gap = 22
 
         top_total_w = top_cols * item_w + (top_cols - 1) * 40
         bottom_total_w = bottom_cols * item_w + (bottom_cols - 1) * 40
@@ -554,7 +610,7 @@ def _generate_listing_pages(decks: list, set_info: dict = None, per_page: int = 
         bottom_start_x = (W - bottom_total_w) // 2
 
         # move items slightly down to add more space beneath header
-        vertical_offset = 30
+        vertical_offset = -30
         top_y = header_h + vertical_offset
         bottom_y = header_h + vertical_offset + item_h + row_gap
 

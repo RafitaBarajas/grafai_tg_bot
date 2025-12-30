@@ -906,7 +906,7 @@ def _generate_deck_grid_image(cards: list, position: int, name_cap: str, set_cod
             deck_img.paste(ph, (x_centered, y))
         qty = str(c.get("qty", 0))
         # render qty as larger text with semi-thick black outline (no black rectangle)
-        qty_font = _load_font(24)
+        qty_font = _load_font(48) #
         qtext = f"x{qty}"
         text_w, text_h = _get_text_size(d2, qtext, qty_font)
         tx = x_centered + tw - text_w - 8

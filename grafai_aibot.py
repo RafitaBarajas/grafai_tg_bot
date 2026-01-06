@@ -106,13 +106,13 @@ async def schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_decks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler: fetch decks, generate listing images and per-deck grids.
     Usage examples:
-      /decks               -> default (5 decks, post to Facebook)
-      /decks false         -> 5 decks, do not post to Facebook
-      /decks 8             -> 8 decks, post to Facebook
-      /decks false 8       -> 8 decks, do not post to Facebook
+      /decks               -> default (5 decks, DO NOT post to Facebook)
+      /decks true          -> 5 decks, post to Facebook
+      /decks 8             -> 8 decks, do not post to Facebook
+      /decks true 8        -> 8 decks, post to Facebook
     """
     await update.message.reply_text("Getting Decks Data...")
-    post_to_fb = True
+    post_to_fb = False
     num_decks = 5
     args = context.args or []
 

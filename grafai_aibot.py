@@ -14,7 +14,7 @@ from PIL import Image, ImageDraw, ImageFont
 import requests
 from datetime import datetime
 
-from get_decks import get_top_10_decks
+from get_decks import get_top_10_decks, get_deck_variants
 from image_creation import (
     _load_font,
     _get_text_size,
@@ -29,6 +29,7 @@ from image_creation import (
     _generate_deck_grid_image,
     _generate_back_cover,
     _generate_listing_pages,
+    _generate_deck_info_image,
 )
 from facebook_posting import post_to_facebook, generate_caption
 
@@ -101,6 +102,157 @@ async def schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         logger.exception("Failed to schedule get_decks")
         await update.message.reply_text("Failed to schedule the job.")
+
+
+async def variants(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler: fetch variants of a specific deck.
+    Usage examples:
+      /variants 1          -> Get variants of 1st best deck
+      /variants 2          -> Get variants of 2nd best deck
+      /variants 5          -> Get variants of 5th best deck
+    """
+    try:
+        args = context.args or []
+        if not args:
+            await update.message.reply_text("Usage: /variants <deck_position>\nExample: /variants 1")
+            return
+        
+        try:
+            deck_position = max(1, int(args[0]))
+        except Exception:
+            await update.message.reply_text("Please provide a numeric deck position.")
+            return
+        
+        await update.message.reply_text(f"Fetching variants for deck #{deck_position}...")
+        
+        # First get the top decks to know which one to fetch variants for
+        data = await asyncio.to_thread(get_top_10_decks)
+        decks = data.get("decks", [])
+        set_info = data.get("set", {}) or {}
+        
+        if deck_position > len(decks):
+            await update.message.reply_text(f"Only {len(decks)} decks available. Please choose a position between 1 and {len(decks)}.")
+            return
+        
+        selected_deck = decks[deck_position - 1]
+        deck_name = selected_deck.get('name', '')
+        deck_url_slug = selected_deck.get('url_slug', '')  # Get the URL slug from the deck data
+        
+        # Fetch variants for this deck
+        variants_data = await asyncio.to_thread(get_deck_variants, deck_url_slug, deck_name, 5)
+        variants_list = variants_data.get('variants', [])
+        
+        if not variants_list:
+            await update.message.reply_text(f"No variants found for deck: {deck_name}")
+            return
+        
+        # Prepare media items
+        media_items = []
+        set_code_value = set_info.get('id') if isinstance(set_info, dict) else set_info
+        
+        # First image: Cover image with deck info and 2 representative cards using _generate_images_for_deck
+        try:
+            cover_image_bytes, grid_image_bytes = await asyncio.to_thread(
+                _generate_images_for_deck,
+                selected_deck,
+                deck_position,
+                set_code_value
+            )
+            media_items.append((cover_image_bytes, f"Deck #{deck_position}: {selected_deck.get('name', '')}"))
+            # Add the grid image as well
+            media_items.append((grid_image_bytes, None))
+        except Exception:
+            logger.exception("Failed to generate deck cover and grid images")
+        
+        # Generate grid images for each variant
+        for variant_idx, variant in enumerate(variants_list, start=1):
+            try:
+                cards = variant.get('cards', []) or []
+                variant_name = variant.get('name', f'Variant {variant_idx}')
+                variant_grid = await asyncio.to_thread(
+                    _generate_deck_grid_image,
+                    cards,
+                    variant_idx,
+                    variant_name,
+                    set_code_value,
+                    variant.get('win_pct'),
+                    variant.get('share'),
+                    variant.get('place'),
+                    variant.get('score')
+                )
+                media_items.append((variant_grid, None))
+            except Exception:
+                logger.exception(f"Error generating grid for variant {variant_idx}")
+                try:
+                    err_img = Image.new('RGB', (800, 450), (30, 30, 30))
+                    ed = ImageDraw.Draw(err_img)
+                    emsg = f"Error creating image for {variant.get('name', 'Variant ' + str(variant_idx))}"
+                    ef = _load_font(24)
+                    ew, eh = _get_text_size(ed, emsg, ef)
+                    ed.text(((800-ew)//2, (450-eh)//2), emsg, font=ef, fill=(255,255,255))
+                    buf_err = io.BytesIO()
+                    err_img.save(buf_err, format='JPEG', quality=85)
+                    buf_err.seek(0)
+                    media_items.append((buf_err.getvalue(), None))
+                except Exception:
+                    continue
+        
+        # Add back cover
+        try:
+            back = await asyncio.to_thread(_generate_back_cover, set_info)
+            if back:
+                media_items.append((back, None))
+        except Exception:
+            logger.exception("Failed to generate back cover")
+        
+        # Send media items in batches of up to 10
+        if not media_items:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="No images to send.")
+            return
+        
+        try:
+            batch_size = 10
+            for i in range(0, len(media_items), batch_size):
+                batch = media_items[i:i+batch_size]
+                medias = []
+                for j, (bbytes, cap) in enumerate(batch):
+                    bio = io.BytesIO(bbytes) if not isinstance(bbytes, io.BytesIO) else bbytes
+                    if isinstance(bio, io.BytesIO):
+                        bio.name = getattr(bio, 'name', f'photo_{i+j}.jpg')
+                        bio.seek(0)
+                    if j == 0 and cap:
+                        medias.append(InputMediaPhoto(media=bio, caption=cap))
+                    else:
+                        medias.append(InputMediaPhoto(media=bio))
+                
+                await context.bot.send_media_group(chat_id=update.effective_chat.id, media=medias)
+        except Exception:
+            logger.exception("Failed to send media groups")
+        
+        # Generate and send caption with hashtags
+        try:
+            variant_names = [v.get('name', '') for v in variants_list]
+            caption, phrase, hashtags_str = await asyncio.to_thread(generate_caption, variant_names)
+            
+            # Extract representative cards for additional hashtags
+            representative = _select_representative_cards(selected_deck.get('name', ''), selected_deck.get('cards', []), limit=2)
+            extra_hashtags = ""
+            if representative:
+                for card in representative:
+                    card_name = card.get('name', '').replace(' ', '_').upper()
+                    if card_name:
+                        extra_hashtags += f" #{card_name}"
+            
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"{phrase}\n\n{hashtags_str}{extra_hashtags}"
+            )
+        except Exception:
+            logger.exception("Failed to send caption")
+    
+    except Exception:
+        logger.exception("Variants command failed")
+        await update.message.reply_text("An error occurred while fetching variants.")
 
 
 async def get_decks(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -298,6 +450,7 @@ def main():
     app.add_handler(CommandHandler("inline", inline_example))
     app.add_handler(CommandHandler("decks", get_decks))
     app.add_handler(CommandHandler("schedule", schedule))
+    app.add_handler(CommandHandler("variants", variants))
     
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), echo))

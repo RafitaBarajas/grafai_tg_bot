@@ -5,6 +5,11 @@ import re
 import html as _html
 from bs4 import BeautifulSoup
 from typing import Any, Dict, List, Optional
+import urllib.parse
+import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def _find_decks_in_obj(obj: Any, game_key: str = "pocket") -> Optional[List[Dict]]:
@@ -163,7 +168,11 @@ def _normalize_deck(d: Dict) -> Dict:
             # unknown shape, skip
             continue
 
-    return {"name": name, "win_pct": round(win_pct, 2), "share": round(share, 2), "cards": cards_out}
+    result = {"name": name, "win_pct": round(win_pct, 2), "share": round(share, 2), "cards": cards_out}
+    # Preserve deck URL slug if present
+    if "url_slug" in d:
+        result["url_slug"] = d["url_slug"]
+    return result
 
 
 def get_top_10_decks() -> Dict:
@@ -378,7 +387,8 @@ def get_top_10_decks() -> Dict:
                 'name': deck_name,
                 'win_pct': round(win_pct or 0.0, 2),
                 'share': round(share or 0.0, 2),
-                'cards': cards
+                'cards': cards,
+                'url_slug': href  # Store the deck URL slug (e.g., '/decks/hydreigon-mega-absol-ex')
             })
             if len(table_decks) >= 10:
                 break
@@ -463,6 +473,223 @@ def get_top_10_decks() -> Dict:
 
     result = {"set": set_out, "decks": normalized[:10]}
     return result
+
+
+def get_deck_variants(deck_url_slug: str, deck_name: str = "", limit: int = 5) -> Dict:
+    """
+    Fetch variants of a specific deck from https://play.limitlesstcg.com<deck_url_slug>
+    where deck_url_slug is something like '/decks/hydreigon-mega-absol-ex'
+    
+    This fetches the "Best Finishes" page and extracts tournament decklists as variants.
+    Returns in format:
+    { 'deck': { deck info }, 'variants': [ { 'name': string, 'cards': [...], 'win_pct': float, 'share': float }, ... ] }
+    """
+    base_url = "https://play.limitlesstcg.com"
+    # Normalize input and extract path/query
+    if not deck_url_slug:
+        return {'deck': {'name': deck_name, 'cards': [], 'win_pct': 0.0, 'share': 0.0}, 'variants': []}
+
+    parsed = urllib.parse.urlparse(deck_url_slug)
+    if parsed.scheme and parsed.netloc:
+        path = parsed.path
+        query = parsed.query
+    else:
+        if '?' in deck_url_slug:
+            path, query = deck_url_slug.split('?', 1)
+            if not path.startswith('/'):
+                path = '/' + path
+        else:
+            path = deck_url_slug if deck_url_slug.startswith('/') else '/' + deck_url_slug
+            query = ''
+
+    # Candidate URLs to try (prefer canonical finishes path)
+    candidates = []
+    candidates.append(base_url.rstrip('/') + path.rstrip('/') + "/?game=POCKET&format=standard")
+    if deck_url_slug.startswith('/'):
+        candidates.append(base_url.rstrip('/') + deck_url_slug)
+    else:
+        candidates.append(base_url.rstrip('/') + '/' + deck_url_slug)
+    candidates.append(base_url.rstrip('/') + path)
+
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+    html = None
+    fetched_url = None
+    for cand in candidates:
+        for attempt in range(2):
+            try:
+                timeout_val = 10 + attempt * 10
+                logger.info("Fetching finishes page: %s (timeout=%s)", cand, timeout_val)
+                resp = requests.get(cand, headers=headers, timeout=timeout_val)
+                resp.raise_for_status()
+                html = resp.text
+                fetched_url = cand
+                break
+            except requests.exceptions.ReadTimeout as e:
+                logger.warning("ReadTimeout fetching %s (attempt %s): %s", cand, attempt + 1, e)
+                time.sleep(0.5 + attempt)
+                continue
+            except Exception as e:
+                logger.debug("Error fetching %s: %s", cand, e)
+                break
+        if html:
+            break
+
+    if not html:
+        logger.error("Could not fetch finishes page for %s. Tried candidates: %s", deck_url_slug, candidates)
+        return {'deck': {'name': deck_name, 'cards': [], 'win_pct': 0.0, 'share': 0.0}, 'variants': []}
+
+    soup = BeautifulSoup(html, "html.parser")
+    
+    # Try to extract the main deck info from the page
+    deck_info = {
+        "name": deck_name,
+        "cards": [],
+        "win_pct": 0.0,
+        "share": 0.0
+    }
+
+    # Extract main deck cards and stats from the page
+    # Look for the main deck list section
+    main_deck_section = soup.select_one(".deck-list, [class*='deck-detail'], [class*='main-deck']")
+    if main_deck_section:
+        card_elements = main_deck_section.select("li.card, .card-row, .deck-card-row")
+        for elem in card_elements:
+            text = elem.get_text(" ", strip=True)
+            # Parse "3x Pikachu (SM1 35)" or similar formats
+            m = re.match(r"(\d+)\s*[xX]?\s*(.+)", text)
+            if m:
+                qty = int(m.group(1))
+                rest = m.group(2)
+                code_m = re.search(r"\(([^)]+)\)\s*$", rest)
+                code = code_m.group(1) if code_m else ""
+                name = re.sub(r"\s*\([^)]*\)\s*$", "", rest).strip()
+                deck_info["cards"].append({"name": name, "code": code, "qty": qty})
+
+    # Extract win% and share% from page
+    # Look for stat elements
+    stat_elements = soup.select("[class*='win'], [class*='share'], [class*='meta']")
+    for elem in stat_elements:
+        text = elem.get_text(strip=True).lower()
+        if "win" in text or "winrate" in text:
+            m = re.search(r"([\d.]+)\s*%", text)
+            if m:
+                try:
+                    deck_info["win_pct"] = float(m.group(1))
+                except Exception:
+                    pass
+        if "share" in text or "meta" in text or "usage" in text:
+            m = re.search(r"([\d.]+)\s*%", text)
+            if m:
+                try:
+                    deck_info["share"] = float(m.group(1))
+                except Exception:
+                    pass
+
+    # Extract variants/finishes - look for tournament decklist links
+    # These appear as /tournament/<id>/player/<name>/decklist links
+    variants = []
+    
+    # Find all tournament decklist links
+    all_links = soup.select("a[href*='/tournament/'][href*='/decklist']")
+    seen_decklists = set()
+    
+    for link in all_links:
+        if len(variants) >= limit:
+            break
+        
+        href = link.get('href', '')
+        player_name = link.get_text(strip=True)
+        
+        # Skip if no text or invalid
+        if not player_name or not href:
+            continue
+        
+        # Skip duplicates
+        if href in seen_decklists:
+            continue
+        seen_decklists.add(href)
+        # Try to extract place/score from the finishes page row (if present)
+        place = ''
+        score = ''
+        try:
+            tr = link.find_parent('tr')
+            if tr:
+                cells = [td.get_text(' ', strip=True) for td in tr.select('td, th')]
+                row_text = ' '.join(cells)
+                mp = re.search(r"(\d+\s*(?:st|nd|rd|th)?\s*of\s*\d+)", row_text, re.I)
+                if mp:
+                    place = mp.group(1)
+                ms = re.search(r"(\d+\s*-\s*\d+\s*-\s*\d+)", row_text)
+                if ms:
+                    score = ms.group(1).replace(' ', '')
+        except Exception:
+            pass
+
+        # Fetch the tournament decklist
+        variant_cards = []
+        try:
+            full_url = base_url.rstrip('/') + href if not href.startswith('http') else href
+            vr = requests.get(full_url, headers=headers, timeout=10)
+            if vr.status_code == 200:
+                vsoup = BeautifulSoup(vr.text, 'html.parser')
+                
+                # Look for the const decklist = `...` pattern in script tags
+                for script in vsoup.select('script'):
+                    script_content = script.string
+                    if script_content and 'const decklist' in script_content and '`' in script_content:
+                        # Extract the decklist content between backticks
+                        m = re.search(r'const\s+decklist\s*=\s*`([^`]*)`', script_content, re.DOTALL)
+                        if m:
+                            decklist_text = m.group(1)
+                            # Parse the decklist format: "2 Deino B1 155" -> qty=2, name=Deino, code=B1-155
+                            for line in decklist_text.split('\n'):
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                # Match: qty Name SetCode Number
+                                match = re.match(r'^(\d+)\s+(.+?)\s+([A-Za-z0-9-]+)\s+(\d+)$', line)
+                                if match:
+                                    qty = int(match.group(1))
+                                    name = match.group(2).strip()
+                                    set_code = match.group(3).strip()
+                                    number = match.group(4).strip()
+                                    code = f"{set_code}-{number}"
+                                    variant_cards.append({'name': name, 'code': code, 'qty': qty})
+                        if variant_cards:
+                            break
+                
+                # Fallback: try standard card selectors if decklist not found
+                if not variant_cards:
+                    card_nodes = vsoup.select('li.card, .card-row, .deck-card-row, .deck-list li, .deck-cards li')
+                    for cn in card_nodes:
+                        text = cn.get_text(' ', strip=True)
+                        m = re.match(r"(\d+)\s*[xX]?\s*(.+)", text)
+                        if m:
+                            qty = int(m.group(1))
+                            rest = m.group(2)
+                            code_m = re.search(r"\(([^)]+)\)\s*$", rest)
+                            code = code_m.group(1) if code_m else ""
+                            name_only = re.sub(r"\s*\([^)]*\)\s*$", '', rest).strip()
+                            variant_cards.append({'name': name_only, 'code': code, 'qty': qty})
+        except Exception:
+            pass
+        
+        if variant_cards:
+            variants.append({
+                'name': player_name or f"Variant {len(variants) + 1}",
+                'cards': variant_cards,
+                'win_pct': 0.0,
+                'share': 0.0,
+                'place': place,
+                'score': score
+            })
+
+    return {
+        'deck': deck_info,
+        'variants': variants[:limit]
+    }
+
 
 
 if __name__ == "__main__":

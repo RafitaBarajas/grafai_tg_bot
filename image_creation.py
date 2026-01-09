@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import unicodedata
 import logging
 from typing import Tuple, Optional
 from datetime import datetime
@@ -842,7 +843,7 @@ def _generate_images_for_deck(deck: dict, position: int, set_code: str) -> Tuple
     return buf1.getvalue(), buf2_bytes
 
 
-def _generate_deck_grid_image(cards: list, position: int, name_cap: str, set_code: str, win_pct=None, share_pct=None) -> bytes:
+def _generate_deck_grid_image(cards: list, position: int, name_cap: str, set_code: str, win_pct=None, share_pct=None, place=None, score=None) -> bytes:
     """Generate only the deck grid image (title + stats + grid of cards).
     Designed to use more width and 5 columns per row.
     """
@@ -857,12 +858,35 @@ def _generate_deck_grid_image(cards: list, position: int, name_cap: str, set_cod
         buf2 = io.BytesIO()
         deck_img = _background_for_set(set_code, (W2, 700))
         d2 = ImageDraw.Draw(deck_img)
-        title2_cap = f"{position}. {name_cap}".upper()
+        # Sanitize title to remove problematic control/special characters
+        try:
+            title_safe = re.sub(r"[\x00-\x1F\x7F\|\[\]<>]", "", name_cap)
+        except Exception:
+            title_safe = name_cap
+        title2_cap = f"{position}. {title_safe}".upper()
         title2_font = _load_font(48, family="Montserrat")
         title2_color = _hex_to_rgb('#eb1c24')
         title_w, title_h = _get_text_size(d2, title2_cap, title2_font)
         title_x = (W2 - title_w) // 2
         d2.text((title_x, 30), title2_cap, font=title2_font, fill=title2_color, stroke_width=6, stroke_fill=(255,255,255))
+        # Stats: prefer place/score if provided
+        stats_text = None
+        if place or score:
+            parts = []
+            if place:
+                parts.append(place)
+            if score:
+                parts.append(score)
+            stats_text = " • ".join(parts).upper()
+            try:
+                stats_font = _load_font(28, family='Rajdhani')
+                stw, sth = _get_text_size(d2, stats_text, stats_font)
+                d2.text(((W2 - stw) // 2, 30 + title_h + 12), stats_text, font=stats_font, fill=_hex_to_rgb('#3367b0'), stroke_width=3, stroke_fill=(255,255,255))
+                y0 = 30 + title_h + 12 + sth + 12
+            except Exception:
+                y0 = 30 + title_h + 12 + 20
+        else:
+            y0 = 30 + title_h + 12 + 20
         try:
             deck_img = _apply_branding(deck_img)
         except Exception:
@@ -877,8 +901,12 @@ def _generate_deck_grid_image(cards: list, position: int, name_cap: str, set_cod
     deck_img = _background_for_set(set_code, (W2, H2))
     d2 = ImageDraw.Draw(deck_img)
 
-    # Title
-    title2_cap = f"{position}. {name_cap}".upper()
+    # Title (sanitize name to avoid unsupported glyphs)
+    try:
+        title_safe = re.sub(r"[\x00-\x1F\x7F\|\[\]<>]", "", name_cap)
+    except Exception:
+        title_safe = name_cap
+    title2_cap = f"{position}. {title_safe}".upper()
     title2_font = _load_font(48, family="Montserrat")
     title2_color = _hex_to_rgb('#eb1c24')
     title_w, title_h = _get_text_size(d2, title2_cap, title2_font)
@@ -894,7 +922,19 @@ def _generate_deck_grid_image(cards: list, position: int, name_cap: str, set_cod
     # add stats line centered below title if provided
     extra_top_padding = 24
     title_stats_gap = 24
-    if win_pct is not None or share_pct is not None:
+    # Stats line: prefer place/score if provided, otherwise fallback to win/share
+    if place or score:
+        parts = []
+        if place:
+            parts.append(place)
+        if score:
+            parts.append(score)
+        stats_text = " • ".join(parts).upper()
+        stats_font = _load_font(28, family='Rajdhani')
+        stw, sth = _get_text_size(d2, stats_text, stats_font)
+        d2.text(((W2 - stw) // 2, 16 + title_h + title_stats_gap), stats_text, font=stats_font, fill=_hex_to_rgb('#3367b0'), stroke_width=3, stroke_fill=(255,255,255))
+        y0 = 16 + title_h + title_stats_gap + sth + 12 + extra_top_padding
+    elif win_pct is not None or share_pct is not None:
         stats_text = f"Win: {win_pct or 0}% • Share: {share_pct or 0}%".upper()
         stats_font = _load_font(28, family='Rajdhani')
         stw, sth = _get_text_size(d2, stats_text, stats_font)
@@ -940,3 +980,111 @@ def _generate_deck_grid_image(cards: list, position: int, name_cap: str, set_cod
     deck_img.convert("RGB").save(buf2, format="JPEG", quality=90)
     buf2.seek(0)
     return buf2.getvalue()
+
+def _generate_deck_info_image(name: str, position: int, win_pct: float, share_pct: float, cards: list, set_code: str) -> bytes:
+    """
+    Generate a deck info image (cover) with:
+    - Medal image (for 1-3) or number (for others) at top, centered
+    - Deck name (bold, centered)
+    - 2 most representative cards (bottom, reduced spacing)
+    Uses same styling as listing pages.
+    """
+    W, H = 1000, 900
+    bg = _background_for_set(set_code, (W, H))
+    draw = ImageDraw.Draw(bg)
+    
+    # Medal image for position 1-3, otherwise numeric rank
+    medal_img = None
+    medal_size = 80
+    medal_y = 30
+    
+    if position <= 3:
+        try:
+            medal_path = os.path.join(os.path.dirname(__file__), "images", f"medal_{position}.png")
+            if os.path.exists(medal_path):
+                medal_img = Image.open(medal_path).convert("RGBA")
+                medal_img.thumbnail((medal_size, medal_size))
+        except Exception:
+            pass
+    
+    # If no medal image, draw number with # prefix
+    if medal_img:
+        medal_x = (W - medal_img.size[0]) // 2
+        bg.paste(medal_img, (medal_x, medal_y), medal_img)
+        name_start_y = medal_y + medal_size + 15
+    else:
+        # Draw numeric position like listing pages
+        pos_font = _load_font(60, family="Rajdhani")
+        pos_text = f"#{position}"
+        pos_w, pos_h = _get_text_size(draw, pos_text, pos_font)
+        draw.text(
+            ((W - pos_w) // 2, medal_y + 8),
+            pos_text,
+            font=pos_font,
+            fill=_hex_to_rgb('#3367b0'),
+            stroke_width=3,
+            stroke_fill=(255, 255, 255)
+        )
+        name_start_y = medal_y + 80 + 15
+    
+    # Deck name (large, bold, centered) - use same style as listing pages
+    name_font = _load_font(52, family="Montserrat")
+    name_w, name_h = _get_text_size(draw, name, name_font)
+    draw.text(
+        ((W - name_w) // 2, name_start_y),
+        name,
+        font=name_font,
+        fill=(255, 255, 255),
+        stroke_width=4,
+        stroke_fill=(0, 0, 0)
+    )
+    
+    # Get 2 representative cards
+    representative_cards = _select_representative_cards(name, cards, limit=2)
+    
+    if representative_cards:
+        # Card size and positioning - reduced spacing between name and cards
+        card_width = 230
+        card_height = 330
+        card_y = name_start_y + name_h + 30  # Reduced spacing
+        
+        if len(representative_cards) == 1:
+            # Center single card
+            card_x = (W - card_width) // 2
+            card_urls = [representative_cards[0].get('code', '')]
+            positions = [(card_x, card_y)]
+        else:
+            # Two cards side by side
+            spacing = 50
+            total_width = 2 * card_width + spacing
+            start_x = (W - total_width) // 2
+            card_urls = [representative_cards[0].get('code', ''), representative_cards[1].get('code', '')]
+            positions = [(start_x, card_y), (start_x + card_width + spacing, card_y)]
+        
+        # Fetch and draw card images
+        for card_code, (card_x, card_y) in zip(card_urls, positions):
+            try:
+                card_img = _fetch_card_image(card_code)
+                if card_img:
+                    # Resize card to fit
+                    card_img.thumbnail((card_width, card_height), Image.LANCZOS)
+                    cw, ch = card_img.size
+                    # Center it in the allocated space
+                    paste_x = card_x + (card_width - cw) // 2
+                    paste_y = card_y + (card_height - ch) // 2
+                    if card_img.mode == 'RGBA':
+                        bg.paste(card_img, (paste_x, paste_y), card_img)
+                    else:
+                        bg.paste(card_img, (paste_x, paste_y))
+            except Exception:
+                pass
+    
+    # Convert to JPEG and return
+    buf = io.BytesIO()
+    try:
+        bg = _apply_branding(bg)
+    except Exception:
+        pass
+    bg.convert("RGB").save(buf, format="JPEG", quality=90)
+    buf.seek(0)
+    return buf.getvalue()

@@ -17,6 +17,36 @@ _CARD_DB_CACHE = None
 _SET_DB_CACHE = None
 
 
+def _remove_bold_unicode(text: str) -> str:
+    """Convert bold Unicode characters to regular ASCII equivalents.
+    Handles Mathematical Alphanumeric Symbols (e.g., 𝗔𝘂𝗿𝗼𝗿𝗮 -> Aurora).
+    """
+    if not text:
+        return text
+    
+    # Mapping of common bold Unicode characters to regular ASCII
+    bold_to_regular = {
+        # Uppercase bold letters (U+1D5D0 to U+1D5E9)
+        '𝗔': 'A', '𝗕': 'B', '𝗖': 'C', '𝗗': 'D', '𝗘': 'E', '𝗙': 'F',
+        '𝗚': 'G', '𝗛': 'H', '𝗜': 'I', '𝗝': 'J', '𝗞': 'K', '𝗟': 'L',
+        '𝗠': 'M', '𝗡': 'N', '𝗢': 'O', '𝗣': 'P', '𝗤': 'Q', '𝗥': 'R',
+        '𝗦': 'S', '𝗧': 'T', '𝗨': 'U', '𝗩': 'V', '𝗪': 'W', '𝗫': 'X',
+        '𝗬': 'Y', '𝗭': 'Z',
+        # Lowercase bold letters (U+1D5EA to U+1D603)
+        '𝗮': 'a', '𝗯': 'b', '𝗰': 'c', '𝗱': 'd', '𝗲': 'e', '𝗳': 'f',
+        '𝗴': 'g', '𝗵': 'h', '𝗶': 'i', '𝗷': 'j', '𝗸': 'k', '𝗹': 'l',
+        '𝗺': 'm', '𝗻': 'n', '𝗼': 'o', '𝗽': 'p', '𝗾': 'q', '𝗿': 'r',
+        '𝘀': 's', '𝘁': 't', '𝘂': 'u', '𝘃': 'v', '𝘄': 'w', '𝘅': 'x',
+        '𝘆': 'y', '𝘇': 'z',
+    }
+    
+    result = ""
+    for char in text:
+        result += bold_to_regular.get(char, char)
+    
+    return result
+
+
 def _get_latest_set_code() -> Optional[str]:
     """Return the latest set code from the pocket-database `sets.json`.
     If the latest set has 'PROMO' in its code, return the previous set's code.
@@ -858,9 +888,10 @@ def _generate_deck_grid_image(cards: list, position: int, name_cap: str, set_cod
         buf2 = io.BytesIO()
         deck_img = _background_for_set(set_code, (W2, 700))
         d2 = ImageDraw.Draw(deck_img)
-        # Sanitize title to remove problematic control/special characters
+        # Sanitize title to remove problematic control/special characters and bold Unicode
         try:
-            title_safe = re.sub(r"[\x00-\x1F\x7F\|\[\]<>]", "", name_cap)
+            title_safe = _remove_bold_unicode(name_cap)
+            title_safe = re.sub(r"[\x00-\x1F\x7F\|\[\]<>]", "", title_safe)
         except Exception:
             title_safe = name_cap
         title2_cap = f"{position}. {title_safe}".upper()
@@ -874,9 +905,9 @@ def _generate_deck_grid_image(cards: list, position: int, name_cap: str, set_cod
         if place or score:
             parts = []
             if place:
-                parts.append(place)
+                parts.append(f"Place: {place}")
             if score:
-                parts.append(score)
+                parts.append(f"Score: {score}")
             stats_text = " • ".join(parts).upper()
             try:
                 stats_font = _load_font(28, family='Rajdhani')
@@ -901,9 +932,10 @@ def _generate_deck_grid_image(cards: list, position: int, name_cap: str, set_cod
     deck_img = _background_for_set(set_code, (W2, H2))
     d2 = ImageDraw.Draw(deck_img)
 
-    # Title (sanitize name to avoid unsupported glyphs)
+    # Title (sanitize name to avoid unsupported glyphs and bold Unicode)
     try:
-        title_safe = re.sub(r"[\x00-\x1F\x7F\|\[\]<>]", "", name_cap)
+        title_safe = _remove_bold_unicode(name_cap)
+        title_safe = re.sub(r"[\x00-\x1F\x7F\|\[\]<>]", "", title_safe)
     except Exception:
         title_safe = name_cap
     title2_cap = f"{position}. {title_safe}".upper()
@@ -926,9 +958,9 @@ def _generate_deck_grid_image(cards: list, position: int, name_cap: str, set_cod
     if place or score:
         parts = []
         if place:
-            parts.append(place)
+            parts.append(f"Place: {place}")
         if score:
-            parts.append(score)
+            parts.append(f"Score: {score}")
         stats_text = " • ".join(parts).upper()
         stats_font = _load_font(28, family='Rajdhani')
         stw, sth = _get_text_size(d2, stats_text, stats_font)

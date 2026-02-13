@@ -125,8 +125,8 @@ async def variants(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(f"Fetching variants for deck #{deck_position}...")
         
-        # First get the top decks to know which one to fetch variants for
-        data = await asyncio.to_thread(get_top_10_decks)
+        # Fetch enough ranked decks to include the requested deck position.
+        data = await asyncio.to_thread(get_top_10_decks, deck_position)
         decks = data.get("decks", [])
         set_info = data.get("set", {}) or {}
         

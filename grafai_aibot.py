@@ -303,7 +303,8 @@ async def do_get_decks(chat_id: int, context: ContextTypes.DEFAULT_TYPE, post_to
         post_to_facebook: Whether to post images to Facebook (default True).
     """
     try:
-        data = await asyncio.to_thread(get_top_10_decks)
+        requested_limit = max(1, int(num_decks))
+        data = await asyncio.to_thread(get_top_10_decks, requested_limit)
     except Exception as e:
         logger.exception("Error fetching decks")
         await context.bot.send_message(chat_id=chat_id, text=f"Error Getting Deck Data: {e}")

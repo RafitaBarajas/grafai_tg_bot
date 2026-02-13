@@ -175,13 +175,17 @@ def _normalize_deck(d: Dict) -> Dict:
     return result
 
 
-def get_top_10_decks() -> Dict:
+def get_top_10_decks(limit: int = 10) -> Dict:
     """
-    Fetch https://play.limitlesstcg.com/decks?game=pocket and return top 10 decks
+    Fetch https://play.limitlesstcg.com/decks?game=pocket and return up to `limit` decks
     in the format:
     { 'set': string, 'decks': [ { 'name': string, 'win_pct': 2-decimal float,
       'share': 2-decimal float, 'cards': [ { 'name': string, 'code': string, 'qty': int }, ... ] }, ... ] }
     """
+    try:
+        limit = max(1, int(limit))
+    except Exception:
+        limit = 10
     url = "https://play.limitlesstcg.com/decks?game=pocket"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
@@ -390,7 +394,7 @@ def get_top_10_decks() -> Dict:
                 'cards': cards,
                 'url_slug': href  # Store the deck URL slug (e.g., '/decks/hydreigon-mega-absol-ex')
             })
-            if len(table_decks) >= 10:
+            if len(table_decks) >= limit:
                 break
 
         if table_decks:
@@ -425,9 +429,9 @@ def get_top_10_decks() -> Dict:
     if decks_found is None:
         raise RuntimeError("Could not find deck data on the page. Page structure may have changed or data is loaded dynamically via JS.")
 
-    # Normalize and pick top 10
+    # Normalize and pick up to requested limit
     normalized = []
-    for d in decks_found[:10]:
+    for d in decks_found[:limit]:
         # if raw dict try normalization, otherwise assume already normalized-ish
         if isinstance(d, dict) and ("cards" in d and "name" in d):
             normalized.append(_normalize_deck(d))
@@ -471,7 +475,7 @@ def get_top_10_decks() -> Dict:
     else:
         set_out = {"id": "", "name": "", "logo": ""}
 
-    result = {"set": set_out, "decks": normalized[:10]}
+    result = {"set": set_out, "decks": normalized[:limit]}
     return result
 
 

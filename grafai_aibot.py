@@ -51,6 +51,92 @@ DEFAULT_BG = (24, 24, 30)
 
 # runtime chosen primary color for the current set (RGB tuple)
 CURRENT_SET_COLOR: Optional[Tuple[int, int, int]] = None
+BASE_HASHTAGS = ["#PokemonTCG", "#PokemonTCGPocket"]
+
+HASHTAG_EXCLUDED_WORDS = {
+    "MEGA",
+    "GALARIAN",
+    "ALOLAN",
+    "HISUIAN",
+    "PALDEAN",
+    "EX",
+    "GX",
+    "V",
+    "VMAX",
+    "VSTAR",
+    "TAG",
+    "TEAM",
+}
+
+
+def _card_name_to_hashtag(card_name: str) -> str:
+    """Build a cleaner hashtag token from a card name."""
+    if not card_name:
+        return ""
+
+    tokens = re.findall(r"[A-Za-z0-9]+", card_name)
+    if not tokens:
+        return ""
+
+    preferred = [t for t in tokens if t.upper() not in HASHTAG_EXCLUDED_WORDS]
+    token = preferred[0] if preferred else tokens[0]
+    return f"#{token}"
+
+
+def _build_card_hashtags(deck_name: str, cards: list, limit: int = 3) -> str:
+    """Pick representative cards and return up to `limit` hashtags."""
+    hashtags = []
+    seen = set()
+
+    representative = _select_representative_cards(deck_name, cards or [], limit=max(limit * 2, limit))
+
+    # Fallback to full card list if representative selection is sparse.
+    card_pool = representative + (cards or [])
+    for card in card_pool:
+        tag = _card_name_to_hashtag((card or {}).get("name", ""))
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        hashtags.append(tag)
+        if len(hashtags) >= limit:
+            break
+
+    return " ".join(hashtags)
+
+
+def _build_card_hashtags_from_decks(decks: list, limit: int = 3) -> str:
+    """Pick up to `limit` unique hashtags from multiple decks."""
+    hashtags = []
+    seen = set()
+
+    for deck in decks or []:
+        deck_name = (deck or {}).get("name", "")
+        cards = (deck or {}).get("cards", []) or []
+        representative = _select_representative_cards(deck_name, cards, limit=max(limit, 3))
+        card_pool = representative + cards
+
+        for card in card_pool:
+            tag = _card_name_to_hashtag((card or {}).get("name", ""))
+            if not tag or tag in seen:
+                continue
+            seen.add(tag)
+            hashtags.append(tag)
+            if len(hashtags) >= limit:
+                return " ".join(hashtags)
+
+    return " ".join(hashtags)
+
+
+def _compose_hashtags(card_hashtags: str) -> str:
+    """Compose default social tags plus card hashtags, deduplicated."""
+    ordered = []
+    seen = set()
+    for tag in BASE_HASHTAGS + (card_hashtags.split() if card_hashtags else []):
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        ordered.append(tag)
+    return " ".join(ordered)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("¡Hola! Soy tu bot. Escribe /help para ver comandos.")
@@ -229,23 +315,18 @@ async def variants(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             logger.exception("Failed to send media groups")
         
-        # Generate and send caption with hashtags
+        # Generate and send caption with card-based hashtags (no variant/player hashtags)
         try:
-            variant_names = [v.get('name', '') for v in variants_list]
-            caption, phrase, hashtags_str = await asyncio.to_thread(generate_caption, variant_names)
-            
-            # Extract representative cards for additional hashtags
-            representative = _select_representative_cards(selected_deck.get('name', ''), selected_deck.get('cards', []), limit=2)
-            extra_hashtags = ""
-            if representative:
-                for card in representative:
-                    card_name = card.get('name', '').replace(' ', '_').upper()
-                    if card_name:
-                        extra_hashtags += f" #{card_name}"
-            
+            phrase = f"Deck #{deck_position} variants for {selected_deck.get('name', '')}"
+            card_hashtags = _build_card_hashtags(
+                selected_deck.get('name', ''),
+                selected_deck.get('cards', []),
+                limit=3,
+            )
+            hashtags_str = _compose_hashtags(card_hashtags)
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                text=f"{phrase}\n\n{hashtags_str}{extra_hashtags}"
+                text=f"{phrase}\n\n{hashtags_str}" if hashtags_str else phrase
             )
         except Exception:
             logger.exception("Failed to send caption")
@@ -410,15 +491,18 @@ async def do_get_decks(chat_id: int, context: ContextTypes.DEFAULT_TYPE, post_to
     # Generate and send caption (phrase + hashtags) to Telegram and optionally Facebook
     try:
         deck_names = [deck.get('name', '') for deck in decks]
-        caption, phrase, hashtags_str = await asyncio.to_thread(generate_caption, deck_names)
+        _, phrase, _ = await asyncio.to_thread(generate_caption, deck_names)
+        card_hashtags = _build_card_hashtags_from_decks(decks, limit=3)
+        hashtags_str = _compose_hashtags(card_hashtags)
+        telegram_caption = f"{phrase}\n\n{hashtags_str}" if hashtags_str else phrase
 
         # Send caption to Telegram
-        await context.bot.send_message(chat_id=chat_id, text=f"{phrase}\n\n{hashtags_str}")
+        await context.bot.send_message(chat_id=chat_id, text=telegram_caption)
 
         # Post to Facebook only if enabled
         if post_to_facebook:
             image_bytes_for_fb = [item[0] for item in media_items]  # Extract bytes from media_items
-            await asyncio.to_thread(post_to_facebook, deck_names, image_bytes_for_fb)
+            await asyncio.to_thread(post_to_facebook, deck_names, image_bytes_for_fb, caption_override=telegram_caption)
         else:
             logger.info("Facebook posting skipped as per user request")
     except Exception:

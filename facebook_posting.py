@@ -102,6 +102,7 @@ def post_to_facebook(
     image_bytes_list: List[bytes],
     facebook_page_id: Optional[str] = None,
     facebook_access_token: Optional[str] = None,
+    caption_override: Optional[str] = None,
 ) -> bool:
     """
     Post images to Facebook page with caption, phrase, and hashtags.
@@ -111,6 +112,7 @@ def post_to_facebook(
         image_bytes_list: List of image bytes to post
         facebook_page_id: Facebook page ID (defaults to env var FACEBOOK_PAGE_ID)
         facebook_access_token: Facebook page access token (defaults to env var FACEBOOK_PAGE_ACCESS_TOKEN)
+        caption_override: Optional complete caption text to use as-is
     
     Returns:
         True if posting succeeded, False otherwise.
@@ -130,7 +132,10 @@ def post_to_facebook(
         return False
     
     try:
-        caption, phrase, hashtags_str = generate_caption(deck_names)
+        if caption_override:
+            caption = caption_override
+        else:
+            caption, _, _ = generate_caption(deck_names)
 
         # If a user access token was provided, try to obtain a Page access token for the target page
         page_token = _get_page_access_token(page_id, access_token)
